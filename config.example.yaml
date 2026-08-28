@@ -1,0 +1,14 @@
+# Copy to .qa-copilot/config.yaml if you want to *disable* sources.
+# You cannot enable a source that policy.py marks disabled.
+# You cannot turn paste-only sources into HTTP fetchers.
+
+enabled:
+  github_issues: true
+  github_bounties: true
+  remotive: true
+  remoteok: true
+  jobicy: true
+  himalayas: true
+  working_nomads: true
+  # crowdworks/lancers/coconala: paste only — use `qa-copilot inbox add`
+  # upwork/usertesting/utest/hackerone/bugcrowd: hard-disabled

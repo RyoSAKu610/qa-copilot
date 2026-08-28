@@ -1,0 +1,15 @@
+.qa-copilot/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
