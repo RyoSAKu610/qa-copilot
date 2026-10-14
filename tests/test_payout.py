@@ -54,9 +54,27 @@ def test_bounty_label_relaxes_context():
     assert extract_payout("tip jar $3", bounty_context=True) == (None, "")
 
 
+def test_hourly_wage_is_not_a_bounty():
+    assert extract_payout("We pay $14/hr for content review") == (None, "")
+    assert extract_payout("Pay: $11 per hour") == (None, "")
+    assert extract_payout("Salary paid monthly, $5,000") == (None, "")
+    # A bona fide bounty rate survives: the word "bounty" beats the wage signal.
+    assert extract_payout("$50/hr bounty for reviewing builds")[0] == 50
+
+
 def test_donation_is_not_a_bounty():
     assert extract_payout("Donate $10-$100 USDT to support us", bounty_context=True) == (None, "")
     assert extract_payout("Sponsor us: $50/month", bounty_context=True) == (None, "")
+
+
+def test_historical_payout_claims_are_not_bounties():
+    # "we've paid out over $11M" is marketing, not a reward for you. The M
+    # multiplier pushes it past the sanity cap and it is dropped.
+    assert extract_payout("We've already paid out over $11M to our engineers") == (None, "")
+
+
+def test_million_scale_is_over_the_cap():
+    assert extract_payout("bounty $2M") == (None, "")
 
 
 def test_empty_input():

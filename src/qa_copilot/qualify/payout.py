@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import re
 
-# "$1,200" / "$300k" / "USD 250" / "1,500 USD" / "US$ 80"
-_AMOUNT = r"\d[\d,]*(?:\.\d+)?\s*[kK]?"
+# "$1,200" / "$300k" / "USD 250" / "1,500 USD" / "US$ 80" / "$11M"
+_AMOUNT = r"\d[\d,]*(?:\.\d+)?\s*[kKmM]?"
 _MONEY_RE = re.compile(
     r"(?:\$\s*(?P<a>" + _AMOUNT + r"))"
     r"|(?:(?P<b>" + _AMOUNT + r")\s*(?:usd|us\$))"
@@ -35,12 +35,25 @@ _BOUNTY_CONTEXT = re.compile(
 # "Donate $10-$100", "sponsor us on Patreon" are money but not a payout to you.
 _NOT_PAYOUT = re.compile(r"(?i)\b(donat(?:e|ion)|sponsor|patreon|tip jar|ko-?fi|fundrais)\b")
 
+# Strong bounty words. These beat an hourly rate, so "$50/hr bounty" is kept.
+_STRONG_BOUNTY = re.compile(r"(?i)\b(bounty|reward|prize|stipend)\b|(報酬|謝礼|賞金|報奨|懸賞)")
+
+# Wage signals. "We pay $14/hr" uses a bounty-ish word ("pay") but is a wage, so
+# it must not rank like a one-off bounty. "$14/hr" is not what triage is for.
+_WAGE = re.compile(
+    r"(?i)(/\s*hr\b|/\s*hour\b|per\s+hour|hourly|/\s*mo\b|per\s+month|monthly|"
+    r"/\s*yr\b|/\s*year\b|per\s+year|per\s+annum|annual|時給|日給|月給|年収|月収|単価)"
+)
+
 
 def _to_float(token: str) -> float:
     cleaned = token.strip().replace(",", "").replace(" ", "")
     multiplier = 1.0
     if cleaned[-1:] in {"k", "K"}:
-        multiplier = 1000.0
+        multiplier = 1_000.0
+        cleaned = cleaned[:-1]
+    elif cleaned[-1:] in {"m", "M"}:
+        multiplier = 1_000_000.0
         cleaned = cleaned[:-1]
     try:
         return float(cleaned) * multiplier
@@ -71,14 +84,17 @@ def extract_payout(*texts: str, bounty_context: bool = False) -> tuple[float | N
         token = match.group("a") or match.group("b") or match.group("c")
         if not token:
             continue
-        if not bounty_context:
+        line_start = blob.rfind("\n", 0, match.start()) + 1
+        line_end = blob.find("\n", match.end())
+        line = blob[line_start : line_end if line_end != -1 else len(blob)]
+        # A wage is not a bounty, even when the sentence uses "pay". This is what
+        # keeps a $14/hr content-review gig out of the top of triage.
+        if _WAGE.search(line) and not _STRONG_BOUNTY.search(line):
+            continue
+        if not bounty_context and not _BOUNTY_CONTEXT.search(line):
             # Without a bounty label, a bounty-ish word must be on the same line.
             # "compensation" there means a salary band, not a one-off bounty.
-            line_start = blob.rfind("\n", 0, match.start()) + 1
-            line_end = blob.find("\n", match.end())
-            line = blob[line_start : line_end if line_end != -1 else len(blob)]
-            if not _BOUNTY_CONTEXT.search(line):
-                continue
+            continue
         value = _to_float(token)
         # Ignore implausible dust and absurd "payouts" from concatenated numbers.
         if 5.0 <= value <= 500_000.0:
