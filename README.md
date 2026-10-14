@@ -62,7 +62,7 @@ permission_to_test: true
 | `remotive` / `remoteok` / `jobicy` / `himalayas` / `working_nomads` | official API | 給与のみ | 求人発見。応募は元サイトで |
 | `arbeitnow` | official API | 給与のみ | キー不要。欧州/リモート中心 |
 | `fourdayweek` | official API | 給与のみ | キー不要。4日勤務の求人 |
-| `careerjet` | official API | 給与のみ | キー不要。`ja_JP` と `en_GB` を同時に検索。Referer 必須 |
+| `careerjet` | official API | 給与のみ | 無料だが `CAREERJET_AFFID` 推奨（既定 `0` は 401 になりやすい）。`ja_JP`/`en_GB` を横断 |
 | `adzuna` | official API | 給与のみ | 無料キー。`jp,gb,us` など国単位で英語/日本語を横断 |
 | `hn_hiring` | official API | 給与のみ | Hacker News「Who is hiring」の今月スレッド |
 | `crowdworks` / `lancers` / `coconala` / `upwork` | paste only | 案件次第 | 自分でブラウザで開いた案件を貼る。HTTPは一切叩かない |
