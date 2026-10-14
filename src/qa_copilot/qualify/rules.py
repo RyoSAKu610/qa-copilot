@@ -30,6 +30,17 @@ DISQUALIFY = [
     (r"usertesting\.com|contributor network", "UserTesting-style human panel"),
 ]
 
+# Aggregator repos ("bounty plaza", etc.) repost other repos' bounties. The copy
+# is not the work: the original may already be assigned, and the aggregator
+# usually cannot pay out. Detect a body that points at a *different* issue URL
+# next to a "source / original link" marker.
+_ISSUE_URL_RE = re.compile(r"https?://github\.com/[^\s/]+/[^\s/]+/issues/\d+", re.I)
+_MIRROR_MARKER = re.compile(
+    r"(source\s*url|original\s+(?:link|issue)|upstream\s+issue|原始链接|原文链接|元の(?:リンク|記事)|参照元)",
+    re.I,
+)
+
+
 
 def _has_bounty_label(listing: Listing) -> bool:
     return any("bounty" in tag.lower() for tag in listing.tags)
@@ -46,11 +57,20 @@ def _blob(listing: Listing) -> str:
     return redact(" \n ".join(p for p in parts if p)).lower()
 
 
+def _is_mirror(listing: Listing) -> bool:
+    body = listing.description or ""
+    if not _MIRROR_MARKER.search(body):
+        return False
+    own = (listing.url or "").rstrip("/").lower()
+    return any(u.rstrip("/").lower() != own for u in _ISSUE_URL_RE.findall(body))
+
+
 def qualify(listing: Listing) -> Qualification:
     text = _blob(listing)
     reasons: list[str] = []
     agent_fit: list[str] = []
     disqualifiers: list[str] = []
+    forces_human = False
     score = 20
 
     payout_usd, payout_note = extract_payout(
@@ -58,6 +78,9 @@ def qualify(listing: Listing) -> Qualification:
         listing.description,
         listing.extra.get("raw") if isinstance(listing.extra.get("raw"), str) else "",
         listing.extra.get("salary") if isinstance(listing.extra.get("salary"), str) else "",
+        # GitHub bounties frequently encode the amount in a label ("$1.2k",
+        # "💎 $780"). Labels are a first-class payout source, not just context.
+        " ".join(listing.tags),
         bounty_context=_has_bounty_label(listing),
     )
 
@@ -74,6 +97,18 @@ def qualify(listing: Listing) -> Qualification:
         if re.search(pat, text, re.I):
             disqualifiers.append(label)
             score = 0
+
+    # A bounty that already has an assignee is almost always claimed. Spending an
+    # afternoon on it earns nothing, so push it out of the default triage view.
+    assignees = listing.extra.get("assignees") or []
+    if _has_bounty_label(listing) and assignees:
+        names = ", ".join(str(a) for a in assignees[:3])
+        disqualifiers.append(f"bounty already assigned to {names} — likely claimed")
+
+    # An aggregator repost points at the real issue elsewhere. Work the original.
+    if _is_mirror(listing):
+        reasons.append("mirror/aggregator copy — chase the original issue, not this repo")
+        forces_human = True
 
     for pat, label in POSITIVE:
         if re.search(pat, text, re.I):
@@ -105,6 +140,9 @@ def qualify(listing: Listing) -> Qualification:
     if disqualifiers:
         verdict = "reject"
         reasons = disqualifiers + reasons
+    elif forces_human:
+        verdict = "needs_human"
+        reasons = [f"score {score} — needs a human look"] + reasons + agent_fit
     elif score >= 45 and agent_fit:
         verdict = "candidate"
         reasons = [f"score {score}"] + agent_fit + reasons

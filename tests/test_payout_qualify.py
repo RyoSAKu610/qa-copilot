@@ -64,3 +64,71 @@ def test_bounty_label_lets_a_bare_amount_count():
         )
     )
     assert q.payout_usd == 300
+
+
+def test_assigned_bounty_is_marked_claimed():
+    q = qualify(
+        _listing(
+            title="Flaky e2e test",
+            description="Reward $500",
+            tags=["bounty"],
+            extra={"assignees": ["someone"]},
+        )
+    )
+    assert q.verdict == "reject"
+    assert any("already assigned" in d for d in q.disqualifiers)
+
+
+def test_assigned_non_bounty_is_not_penalised():
+    q = qualify(
+        _listing(
+            title="Fix the flaky e2e test",
+            description="Reproduce the bug and add regression coverage.",
+            tags=["good first issue"],
+            extra={"assignees": ["someone"]},
+        )
+    )
+    assert not any("already assigned" in d for d in q.disqualifiers)
+
+
+def test_bounty_label_amount_counts_into_payout():
+    # GitHub bounties often put the amount in a label ("$1.2k", "$780").
+    q = qualify(
+        _listing(
+            title="Automate Bug Detection",
+            description="Find bugs and file issues.",
+            tags=["bounty", "$780", "$1k", "$1.2k"],
+        )
+    )
+    assert q.payout_usd == 1200
+
+
+def test_mirror_repost_is_demoted():
+    q = qualify(
+        _listing(
+            title="[Bounty $3,000] Fix sampling bias",
+            url="https://github.com/plaza/agg/issues/1836",
+            description=(
+                "### 赏金平台\n### 原始链接 / Source URL "
+                "https://github.com/real/repo/issues/59732\n"
+                "[Bounty $3,000] Fix sampling bias"
+            ),
+            tags=["bounty"],
+        )
+    )
+    assert q.verdict == "needs_human"
+    assert any("mirror" in r for r in q.reasons)
+
+
+def test_self_reference_is_not_a_mirror():
+    q = qualify(
+        _listing(
+            title="Flaky e2e test",
+            url="https://github.com/acme/widgets/issues/5",
+            description="See source url https://github.com/acme/widgets/issues/5 for context.",
+            tags=["bounty"],
+        )
+    )
+    assert not any("mirror" in r for r in q.reasons)
+
+

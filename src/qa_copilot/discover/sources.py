@@ -119,7 +119,15 @@ def _listing_from_github(source: str, item: dict) -> Listing:
         description=redact(_s(item, "body")[:4000]),
         tags=[_s(lb, "name") for lb in (item.get("labels") or []) if isinstance(lb, dict)],
         fetched_at=utc_now(),
-        extra={"repo_url": _s(item, "repository_url"), "number": item.get("number")},
+        extra={
+            "repo_url": _s(item, "repository_url"),
+            "number": item.get("number"),
+            # An assignee usually means the bounty is already claimed. Chasing a
+            # claimed bounty is the fastest way to earn nothing.
+            "assignees": [
+                _s(a, "login") for a in (item.get("assignees") or []) if isinstance(a, dict)
+            ],
+        },
     )
 
 
