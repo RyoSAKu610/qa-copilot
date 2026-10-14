@@ -1,20 +1,12 @@
 # qa-copilot
 
-Human-gated QA agent. It finds work, scores it, prepares a sandbox, helps you test, and writes a report. **It never applies, bids, comments, or messages a marketplace.**
+Human-gated QA agent. It finds work, scores it by **payout**, prepares a sandbox, helps you test, and writes a report. **It never applies, bids, comments, or messages a marketplace.**
 
 狙いは「案件を勝手に受けるボット」ではなく、
 
-**発見 → 条件判定 → テスト環境準備 → 実行支援 → レポート → 最終承認だけ人間**
+**発見 → 条件判定（金額×適合度）→ テスト環境準備 → 実行支援 → レポート → 最終承認だけ人間**
 
-です。各サービスの自動化・AI規約を 2026-08-28 時点で読み、違反しない範囲の最小構成だけを実装しています。詳細は [docs/POLICY.md](docs/POLICY.md)。
-
-## What it will not do
-
-- CrowdWorks / Lancers / Coconala / Upwork をスクレイピングしない
-- 応募・入札・DM を自動送信しない
-- UserTesting / uTest を受けない（規約上、人間前提 or AI回答禁止）
-- バグバウンティへ未検証レポートを投げない
-- 求人広告を見ただけで本番サイトを叩かない（明示のテスト許可が必要）
+です。各サービスの自動化・AI規約を読み、違反しない範囲の最小構成だけを実装しています。詳細は [docs/POLICY.md](docs/POLICY.md)。
 
 ## Install
 
@@ -24,13 +16,14 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-GitHub Search のレート制限を緩めるなら `GITHUB_TOKEN` か `GH_TOKEN` を環境変数に置きます（公式 PAT。スクレイピングではありません）。
+Python 3.11 以上が必要です。
 
 ## Pipeline
 
 ```bash
 qa-copilot policy                          # ソース可否の一覧
-qa-copilot discover --source github_issues,remotive
+qa-copilot discover --source github_bounties,careerjet,arbeitnow
+qa-copilot triage                          # 報酬額 × QA適合度で「今やる案件」を並べる
 qa-copilot inbox add examples/paste-crowdworks.md
 qa-copilot list
 qa-copilot show <id>
@@ -40,6 +33,10 @@ qa-copilot report <id>
 qa-copilot approve <id> --operator you --i-understand
 qa-copilot packet <id>                     # ローカル APPLY.md を書くだけ。送信しない
 ```
+
+`triage` は **報酬額を第一、QA適合度を第二** に並べます。バウンティ案件は `$500` のような金額を
+本文・ラベルから拾い、年収レンジや時給（`$140K–$160K`、`$30/hr`）は報酬ではなく給与として無視します。
+案件数だけ多くても儲からない仕事で一日を溶かさないためのコマンドです。
 
 クラウドワークス等は公式のワーカー向け求人 API が無いので、ブラウザで開いた案件を YAML front matter 付きで貼ります。
 
@@ -57,6 +54,41 @@ permission_to_test: true
 
 `client_allows_ai: no` や「生成AI禁止」と書いてある案件は qualifier が reject します。
 
+## Sources
+
+| source | アクセス | 金額 | 備考 |
+| --- | --- | --- | --- |
+| `github_issues` / `github_bounties` | official API | バウンティあり | 実作業の大半をエージェントが担当できる本命 |
+| `remotive` / `remoteok` / `jobicy` / `himalayas` / `working_nomads` | official API | 給与のみ | 求人発見。応募は元サイトで |
+| `arbeitnow` | official API | 給与のみ | キー不要。欧州/リモート中心 |
+| `fourdayweek` | official API | 給与のみ | キー不要。4日勤務の求人 |
+| `careerjet` | official API | 給与のみ | キー不要。`ja_JP` と `en_GB` を同時に検索。Referer 必須 |
+| `adzuna` | official API | 給与のみ | 無料キー。`jp,gb,us` など国単位で英語/日本語を横断 |
+| `hn_hiring` | official API | 給与のみ | Hacker News「Who is hiring」の今月スレッド |
+| `crowdworks` / `lancers` / `coconala` / `upwork` | paste only | 案件次第 | 自分でブラウザで開いた案件を貼る。HTTPは一切叩かない |
+| `usertesting` / `utest` / `freelancer_com` / `hackerone` / `bugcrowd` | disabled | - | AI規約・自動化規約により対象外 |
+
+### Environment
+
+| 変数 | 用途 |
+| --- | --- |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub Search のレート制限を緩める（公式PAT。スクレイピングではない） |
+| `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` | [developer.adzuna.com](https://developer.adzuna.com/) の無料キー。`adzuna` を使う場合のみ |
+| `ADZUNA_COUNTRIES` | 既定 `jp,gb,us` |
+| `CAREERJET_LOCALES` | 既定 `ja_JP,en_GB` |
+| `CAREERJET_AFFID` | 既定 `0`。本番アフィリエイトIDがあれば設定 |
+
+キーが無いソースは discover 時に「キーを設定してください」と明示してスキップします（無言で失敗しません）。
+
+## What it will not do (and why it would cost you money)
+
+- CrowdWorks / Lancers / Coconala / Upwork をスクレイピングしない
+- 応募・入札・DM を自動送信しない（BANされると売上は0になる）
+- Upwork へ HTTP を一切話しかけない（paste のみ。入札は必ず本人が公式UIで）
+- UserTesting / uTest を受けない（規約上AI回答が禁止＝成果物が提出できない）
+- バグバウンティへ未検証レポートを投げない
+- 求人広告を見ただけで本番サイトを叩かない（明示のテスト許可が必要）
+
 ## Agent fit
 
 エージェントが実際に手伝える案件はだいたいこれです。
@@ -72,10 +104,12 @@ permission_to_test: true
 ## Layout
 
 ```
-src/qa_copilot/policy.py   # ハードゲート（config で緩められない）
-docs/POLICY.md             # 規約調査メモ
-examples/                  # 貼り付けサンプル
-fixtures/site/             # ローカル実行用 HTML
+src/qa_copilot/policy.py      # ハードゲート（config で緩められない）
+src/qa_copilot/qualify/payout.py  # 報酬額の抽出
+src/qa_copilot/discover/sources.py # 公式APIフェッチャ
+docs/POLICY.md                # 規約調査メモ
+examples/                     # 貼り付けサンプル
+fixtures/site/                # ローカル実行用 HTML
 ```
 
 ## License

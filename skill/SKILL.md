@@ -27,7 +27,8 @@ Read `docs/POLICY.md` in the repo before expanding a source.
 
 ```bash
 qa-copilot policy
-qa-copilot discover --source github_issues,github_bounties,remotive
+qa-copilot discover --source github_bounties,careerjet,arbeitnow
+qa-copilot triage            # rank by payout then QA fit; work top-down
 qa-copilot inbox add <pasted.md>
 qa-copilot list
 qa-copilot prepare <id>
@@ -38,6 +39,15 @@ qa-copilot packet <id>
 ```
 
 After `packet`, tell the human to submit in the official UI. Do not offer to "just send it".
+
+## Sources that pay
+
+`github_bounties` is the only channel where an agent does most of the work and a human
+does one click (open the PR). `careerjet` / `adzuna` cover Japanese and English markets at
+once; `hn_hiring` and `arbeitnow` are English/remote. Everything else is discovery-only.
+
+`triage` sorts by payout amount first. Bounties are parsed from text; salaries and hourly
+rates are deliberately ignored so a $250k job posting does not outrank a $500 bounty.
 
 ## Paste format
 

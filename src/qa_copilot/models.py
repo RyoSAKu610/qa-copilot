@@ -48,12 +48,15 @@ class Qualification:
     agent_fit: list[str]
     disqualifiers: list[str]
     qualified_at: str
+    payout_usd: float | None = None
+    payout_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Qualification":
+        payout = data.get("payout_usd")
         return cls(
             listing_id=data["listing_id"],
             score=int(data["score"]),
@@ -62,6 +65,8 @@ class Qualification:
             agent_fit=list(data.get("agent_fit") or []),
             disqualifiers=list(data.get("disqualifiers") or []),
             qualified_at=data.get("qualified_at") or utc_now(),
+            payout_usd=float(payout) if payout is not None else None,
+            payout_note=data.get("payout_note") or "",
         )
 
 

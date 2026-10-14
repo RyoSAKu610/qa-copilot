@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import html
 import os
 import re
 from typing import Any, Callable
+from urllib.parse import urlencode
 
-from qa_copilot.httputil import get_json
+from qa_copilot.httputil import USER_AGENT, get_json
 from qa_copilot.models import Listing, utc_now
 from qa_copilot.policy import PolicyError
 from qa_copilot.redact import redact
@@ -14,6 +16,42 @@ from .ids import listing_id
 Fetcher = Callable[[int], list[Listing]]
 
 QA_QUERY = "qa OR test OR testing OR playwright OR a11y OR bug OR regression"
+
+# Used by the high-volume aggregators to keep only QA-shaped rows, in English and
+# Japanese. Deliberately broader than qualify(): discovery is cheap, noise is not.
+_QA_RE = re.compile(
+    r"\b(qa|q\.a\.|quality|test|testing|tester|sdet|automation|playwright|cypress|"
+    r"selenium|e2e|regression|a11y|accessibility)\b|(テスト|品質|検証|不具合)",
+    re.I,
+)
+
+
+def _is_qa_like(text: str) -> bool:
+    return bool(_QA_RE.search(text or ""))
+
+
+# Hacker News hiring comments are free prose, so a loose keyword match returns
+# "Growth Marketing Manager" because the body says "test". The first line is the
+# role header, so match QA role titles there instead.
+_QA_ROLE_RE = re.compile(
+    r"\b(qa|q\.?a\.?|sdet|software\s+tester|"
+    r"test\s+(?:engineer|engineering|lead|manager|analyst|automation|specialist|architect|developer)|"
+    r"(?:test|qa)\s+automation|"
+    r"quality\s+(?:assurance|engineer|engineering|lead|analyst|manager))\b",
+    re.I,
+)
+
+
+def _looks_like_qa_role(comment: str) -> bool:
+    header = (comment or "").strip().split("\n", 1)[0]
+    return bool(_QA_ROLE_RE.search(header))
+
+
+def _strip_html(text: str) -> str:
+    if not text:
+        return ""
+    return html.unescape(re.sub(r"<[^>]+>", " ", text)).strip()
+
 
 
 def _s(obj: Any, *keys: str, default: str = "") -> str:
@@ -240,6 +278,233 @@ def fetch_working_nomads(limit: int = 20) -> list[Listing]:
     return out
 
 
+def fetch_arbeitnow(limit: int = 20) -> list[Listing]:
+    data = get_json("arbeitnow", "https://www.arbeitnow.com/api/job-board-api")
+    rows = data.get("data") if isinstance(data, dict) else None
+    out: list[Listing] = []
+    seen: set[tuple[str, str]] = set()
+    for job in rows or []:
+        if not isinstance(job, dict):
+            continue
+        title = _s(job, "title")
+        tags = _tags(job, "tags") + _tags(job, "job_types")
+        location = _s(job, "location")
+        if not _is_qa_like(f"{title} {' '.join(tags)} {location}"):
+            continue
+        # The same role is often posted once per city; keep only the first.
+        dedupe_key = (title.strip().lower(), _s(job, "company_name").strip().lower())
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        url = _s(job, "url")
+        out.append(
+            Listing(
+                id=listing_id("arbeitnow", url or _s(job, "slug")),
+                source="arbeitnow",
+                title=title,
+                url=url,
+                company=_s(job, "company_name"),
+                description=redact(_strip_html(_s(job, "description"))[:4000]),
+                tags=tags,
+                fetched_at=utc_now(),
+                attribution="Source: Arbeitnow (https://www.arbeitnow.com). Apply on the original listing.",
+                extra={"location": location, "remote": job.get("remote")},
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_fourdayweek(limit: int = 20) -> list[Listing]:
+    data = get_json("fourdayweek", "https://4dayweek.io/api/jobs")
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    out: list[Listing] = []
+    for job in jobs or []:
+        if not isinstance(job, dict):
+            continue
+        title = _s(job, "title")
+        category = _s(job, "category")
+        if not _is_qa_like(f"{title} {category}"):
+            continue
+        slug = _s(job, "slug")
+        url = f"https://4dayweek.io/job/{slug}" if slug else f"https://4dayweek.io/job/{_s(job, 'id')}"
+        locations = [
+            loc.get("city") or loc.get("country")
+            for loc in (job.get("locations") or [])
+            if isinstance(loc, dict)
+        ]
+        out.append(
+            Listing(
+                id=listing_id("fourdayweek", url),
+                source="fourdayweek",
+                title=title,
+                url=url,
+                company=_s(job, "company_name"),
+                description=redact(f"{category} / {_s(job, 'schedule_type')} / {_s(job, 'level')}"),
+                tags=[t for t in (category, _s(job, "schedule_type")) if t],
+                fetched_at=utc_now(),
+                attribution="Source: 4dayweek.io. Apply on the original listing.",
+                extra={"locations": ", ".join(l for l in locations if l), "schedule_type": _s(job, "schedule_type")},
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_careerjet(limit: int = 20) -> list[Listing]:
+    affid = os.environ.get("CAREERJET_AFFID", "0")
+    referer = os.environ.get("CAREERJET_REFERER", "https://github.com/RyoSAKu610/qa-copilot")
+    locales = [l.strip() for l in os.environ.get("CAREERJET_LOCALES", "ja_JP,en_GB").split(",") if l.strip()]
+    out: list[Listing] = []
+    seen: set[str] = set()
+    for locale in locales:
+        if len(out) >= limit:
+            break
+        keywords = "QA テスト" if locale.lower().startswith("ja") else "QA automation test"
+        params = urlencode(
+            {
+                "keywords": keywords,
+                "location": "",
+                "affid": affid,
+                "user_ip": os.environ.get("CAREERJET_USER_IP", "127.0.0.1"),
+                "user_agent": USER_AGENT,
+                "locale_code": locale,
+                "pagesize": min(limit, 100),
+            }
+        )
+        # Careerjet's public endpoint is http-only and requires a Referer.
+        data = get_json("careerjet", f"http://public.api.careerjet.net/search?{params}", headers={"Referer": referer})
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        for job in jobs or []:
+            if not isinstance(job, dict):
+                continue
+            url = _s(job, "url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append(
+                Listing(
+                    id=listing_id("careerjet", url),
+                    source="careerjet",
+                    title=_s(job, "title"),
+                    url=url,
+                    company=_s(job, "company"),
+                    description=redact(_strip_html(_s(job, "description"))[:4000]),
+                    tags=[locale],
+                    fetched_at=utc_now(),
+                    attribution=f"Source: Careerjet ({locale}). Apply on the original listing.",
+                    extra={"locale": locale, "location": _s(job, "locations"), "salary": _s(job, "salary")},
+                )
+            )
+            if len(out) >= limit:
+                break
+    return out
+
+
+def fetch_adzuna(limit: int = 20) -> list[Listing]:
+    app_id = os.environ.get("ADZUNA_APP_ID")
+    app_key = os.environ.get("ADZUNA_APP_KEY")
+    if not app_id or not app_key:
+        raise PolicyError("adzuna: set ADZUNA_APP_ID and ADZUNA_APP_KEY (free at developer.adzuna.com)")
+    countries = [c.strip() for c in os.environ.get("ADZUNA_COUNTRIES", "jp,gb,us").split(",") if c.strip()]
+    out: list[Listing] = []
+    seen: set[str] = set()
+    for country in countries:
+        if len(out) >= limit:
+            break
+        params = urlencode(
+            {
+                "app_id": app_id,
+                "app_key": app_key,
+                "results_per_page": min(limit, 50),
+                "what": "QA test" if country != "jp" else "QA テスト",
+                "content-type": "application/json",
+            }
+        )
+        url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}"
+        data = get_json("adzuna", url)
+        jobs = data.get("results") if isinstance(data, dict) else None
+        for job in jobs or []:
+            if not isinstance(job, dict):
+                continue
+            link = _s(job, "redirect_url")
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            out.append(
+                Listing(
+                    id=listing_id("adzuna", link),
+                    source="adzuna",
+                    title=_s(job, "title"),
+                    url=link,
+                    company=_s(job.get("company"), "display_name"),
+                    description=redact(_strip_html(_s(job, "description"))[:4000]),
+                    tags=[country] + _tags(job, "category"),
+                    fetched_at=utc_now(),
+                    attribution=f"Source: Adzuna ({country}). Apply on the original listing.",
+                    extra={"country": country, "location": _s(job.get("location"), "display_name")},
+                )
+            )
+            if len(out) >= limit:
+                break
+    return out
+
+
+def fetch_hn_hiring(limit: int = 20) -> list[Listing]:
+    stories = get_json(
+        "hn_hiring",
+        "https://hn.algolia.com/api/v1/search_by_date?tags=story,author_whoishiring&hitsPerPage=10&query=hiring",
+    )
+    hits = stories.get("hits") if isinstance(stories, dict) else None
+    thread = next(
+        (h for h in (hits or []) if isinstance(h, dict) and "Who is hiring" in _s(h, "title")),
+        None,
+    )
+    if not thread:
+        raise PolicyError("hn_hiring: could not locate the current 'Who is hiring' thread")
+    thread_id = _s(thread, "objectID")
+    # Pull every comment in the thread once, then filter locally by role title.
+    # The Algolia full-text query alone is too loose (matches "test" in any
+    # sentence) and too tight when combined with AND-style terms.
+    comments = get_json(
+        "hn_hiring",
+        f"https://hn.algolia.com/api/v1/search?tags=comment,story_{thread_id}&hitsPerPage=1000",
+    )
+    rows = comments.get("hits") if isinstance(comments, dict) else None
+    out: list[Listing] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        text = _strip_html(_s(row, "comment_text"))
+        if not _looks_like_qa_role(text):
+            continue
+        object_id = _s(row, "objectID")
+        if object_id in seen:
+            continue
+        seen.add(object_id)
+        url = f"https://news.ycombinator.com/item?id={object_id}"
+        out.append(
+            Listing(
+                id=listing_id("hn_hiring", url),
+                source="hn_hiring",
+                title=text.split("\n", 1)[0][:120] or "HN: Who is hiring — QA role",
+                url=url,
+                company="",
+                description=redact(text[:4000]),
+                tags=["hn", "who-is-hiring"],
+                fetched_at=utc_now(),
+                attribution=f"Source: Hacker News '{_s(thread, 'title')}'. Reply by email or the linked form.",
+                extra={"thread": f"https://news.ycombinator.com/item?id={thread_id}"},
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
 REGISTRY: dict[str, Fetcher] = {
     "github_issues": fetch_github_issues,
     "github_bounties": fetch_github_bounties,
@@ -248,4 +513,9 @@ REGISTRY: dict[str, Fetcher] = {
     "jobicy": fetch_jobicy,
     "himalayas": fetch_himalayas,
     "working_nomads": fetch_working_nomads,
+    "arbeitnow": fetch_arbeitnow,
+    "fourdayweek": fetch_fourdayweek,
+    "careerjet": fetch_careerjet,
+    "adzuna": fetch_adzuna,
+    "hn_hiring": fetch_hn_hiring,
 }

@@ -10,5 +10,17 @@ enabled:
   jobicy: true
   himalayas: true
   working_nomads: true
-  # crowdworks/lancers/coconala: paste only — use `qa-copilot inbox add`
-  # upwork/usertesting/utest/hackerone/bugcrowd: hard-disabled
+  arbeitnow: true
+  fourdayweek: true
+  careerjet: true
+  adzuna: true        # needs ADZUNA_APP_ID / ADZUNA_APP_KEY
+  hn_hiring: true
+  # crowdworks/lancers/coconala/upwork: paste only — use `qa-copilot inbox add`
+  # usertesting/utest/hackerone/bugcrowd: hard-disabled
+
+# Environment overrides used by the aggregators:
+#   ADZUNA_APP_ID / ADZUNA_APP_KEY   free key from developer.adzuna.com
+#   ADZUNA_COUNTRIES                 default "jp,gb,us"
+#   CAREERJET_AFFID                  default "0"
+#   CAREERJET_LOCALES                default "ja_JP,en_GB"
+#   GITHUB_TOKEN / GH_TOKEN          raises the GitHub Search rate limit

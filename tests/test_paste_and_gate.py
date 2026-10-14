@@ -7,7 +7,7 @@ import pytest
 from qa_copilot.approve.gate import approve, build_packet
 from qa_copilot.discover.paste import parse_paste
 from qa_copilot.execute.runner import execute
-from qa_copilot.policy import PolicyError
+from qa_copilot.policy import PolicyError, assert_http_allowed
 from qa_copilot.qualify.rules import qualify
 from qa_copilot.report.renderer import render_report
 from qa_copilot.store import Workspace
@@ -21,9 +21,20 @@ def test_parse_crowdworks_paste(tmp_path: Path):
     assert q.verdict in {"candidate", "needs_human"}
 
 
-def test_parse_upwork_paste_blocked(tmp_path: Path):
+def test_parse_upwork_paste_is_allowed_but_never_http(tmp_path: Path):
+    # Upwork now accepts pasted listings (human copied it), but the tool still
+    # refuses to talk HTTP to Upwork.
     p = tmp_path / "up.md"
     p.write_text("---\nsource: upwork\ntitle: x\n---\nhello\n", encoding="utf-8")
+    listing = parse_paste(p)
+    assert listing.source == "upwork"
+    with pytest.raises(PolicyError):
+        assert_http_allowed("upwork", "https://www.upwork.com/jobs/~1")
+
+
+def test_parse_usertesting_paste_still_blocked(tmp_path: Path):
+    p = tmp_path / "ut.md"
+    p.write_text("---\nsource: usertesting\ntitle: x\n---\nhello\n", encoding="utf-8")
     with pytest.raises(PolicyError, match="disabled"):
         parse_paste(p)
 
