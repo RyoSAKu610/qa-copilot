@@ -40,6 +40,14 @@ _MIRROR_MARKER = re.compile(
     re.I,
 )
 
+# Repos that describe themselves as a sandbox/demo do not pay out. Seen live:
+# "Sandbox fixture for testing an automated OSS bounty-solving workflow".
+_FAKE_BOUNTY_REPO = re.compile(
+    r"(sandbox\s+fixture|test\s+fixture|fixture\s+for|live\s+demo|demo\s+repo|"
+    r"practice\s+bounty|example\s+bounty|sample\s+bounty|not\s+real)",
+    re.I,
+)
+
 
 
 def _has_bounty_label(listing: Listing) -> bool:
@@ -109,6 +117,20 @@ def qualify(listing: Listing) -> Qualification:
     if _is_mirror(listing):
         reasons.append("mirror/aggregator copy — chase the original issue, not this repo")
         forces_human = True
+
+    # A bounty is only worth the afternoon if the repo actually pays.
+    repo = listing.extra.get("repo") if isinstance(listing.extra.get("repo"), dict) else None
+    if repo:
+        if repo.get("archived"):
+            disqualifiers.append("repository is archived")
+        desc = str(repo.get("description") or "")
+        if _FAKE_BOUNTY_REPO.search(desc):
+            reasons.append(f"repo calls itself a fixture/demo — verify it pays ({desc[:70]})")
+            forces_human = True
+        stars, forks = repo.get("stars"), repo.get("forks")
+        if isinstance(stars, int) and isinstance(forks, int) and stars > 0 and forks > stars * 2:
+            reasons.append(f"forks ({forks}) far outnumber stars ({stars}) — may be an automated-PR farm")
+            forces_human = True
 
     for pat, label in POSITIVE:
         if re.search(pat, text, re.I):

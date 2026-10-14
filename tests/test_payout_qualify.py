@@ -132,3 +132,50 @@ def test_self_reference_is_not_a_mirror():
     assert not any("mirror" in r for r in q.reasons)
 
 
+def test_fixture_repo_is_demoted():
+    q = qualify(
+        _listing(
+            title="parse_duration drops the days unit",
+            description="Fix the parser.",
+            tags=["bounty", "$50"],
+            extra={
+                "repo": {
+                    "description": "Sandbox fixture for testing an automated OSS bounty-solving workflow",
+                    "stars": 24,
+                    "forks": 149,
+                    "archived": False,
+                }
+            },
+        )
+    )
+    assert q.verdict == "needs_human"
+    assert any("fixture" in r for r in q.reasons)
+
+
+def test_archived_repo_is_rejected():
+    q = qualify(
+        _listing(
+            title="Flaky test",
+            description="Reward $500",
+            tags=["bounty"],
+            extra={"repo": {"description": "old", "stars": 10, "forks": 1, "archived": True}},
+        )
+    )
+    assert q.verdict == "reject"
+    assert any("archived" in d for d in q.disqualifiers)
+
+
+def test_healthy_repo_is_not_penalised():
+    q = qualify(
+        _listing(
+            title="Flaky e2e test",
+            description="Reproduce the bug and add regression coverage. Reward $500",
+            tags=["bounty"],
+            extra={"repo": {"description": "A real project", "stars": 900, "forks": 120, "archived": False}},
+        )
+    )
+    assert not any("fixture" in r for r in q.reasons)
+    assert not any("farm" in r for r in q.reasons)
+
+
+
