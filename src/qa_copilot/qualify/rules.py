@@ -6,6 +6,8 @@ from qa_copilot.models import Listing, Qualification, utc_now
 from qa_copilot.policy import get_source
 from qa_copilot.redact import redact
 
+from .payout import extract_payout
+
 # Agent-shaped QA work this tool is actually built to help with.
 POSITIVE = [
     (r"\b(qa|q\.?a\.?|quality assurance|test(?:ing|er)?|e2e|end[- ]to[- ]end)\b", "QA/testing language"),
@@ -47,6 +49,13 @@ def qualify(listing: Listing) -> Qualification:
     disqualifiers: list[str] = []
     score = 20
 
+    payout_usd, payout_note = extract_payout(
+        listing.title,
+        listing.description,
+        listing.extra.get("raw") if isinstance(listing.extra.get("raw"), str) else "",
+        listing.extra.get("salary") if isinstance(listing.extra.get("salary"), str) else "",
+    )
+
     policy = get_source(listing.source) if listing.source else None
     if policy and policy.access.value == "disabled":
         disqualifiers.append(f"source {listing.source} is disabled by policy")
@@ -79,6 +88,13 @@ def qualify(listing: Listing) -> Qualification:
     if listing.source in {"crowdworks", "lancers", "coconala"} and not listing.ai_disclosed:
         reasons.append("JP marketplace paste: disclose AI use before applying unless the client already allowed it")
 
+    if payout_usd is not None:
+        agent_fit.append(f"payout {payout_note}")
+        # A stated payout is a real signal that the work is scoped and funded.
+        score += 10
+        if payout_usd >= 150:
+            score += 10
+
     score = max(0, min(100, score))
 
     if disqualifiers:
@@ -99,4 +115,6 @@ def qualify(listing: Listing) -> Qualification:
         agent_fit=agent_fit,
         disqualifiers=disqualifiers,
         qualified_at=utc_now(),
+        payout_usd=payout_usd,
+        payout_note=payout_note,
     )

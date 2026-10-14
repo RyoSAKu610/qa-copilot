@@ -34,6 +34,12 @@ def get_json(source_id: str, url: str, *, headers: dict[str, str] | None = None,
         resp = client.get(url)
         if resp.status_code == 429:
             raise PolicyError(f"{source_id}: rate limited (HTTP 429). Slow down and retry later.")
+        if resp.status_code in (401, 403):
+            raise PolicyError(
+                f"{source_id}: access denied (HTTP {resp.status_code}). "
+                "This source needs its own credentials (see `qa-copilot policy`) or is throttling; "
+                "do not try to work around it."
+            )
         resp.raise_for_status()
         ctype = resp.headers.get("content-type", "")
         if "json" not in ctype and not resp.text.lstrip().startswith(("{", "[")):

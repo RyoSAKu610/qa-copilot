@@ -37,15 +37,45 @@ def cmd_discover(args: argparse.Namespace) -> int:
     ws = _ws(args)
     sources = args.source.split(",") if args.source else None
     listings, errors = run_discover(sources, limit=args.limit)
+    scored: list[tuple[Listing, object]] = []
     for listing in listings:
         q = qualify(listing)
         ws.save_listing(listing)
         ws.save_qualification(q)
-        print(f"{q.verdict:12} {q.score:3}  {listing.id}  [{listing.source}] {listing.title[:70]}")
+        scored.append((listing, q))
+    scored.sort(key=lambda pair: (pair[1].payout_usd or 0, pair[1].score), reverse=True)  # type: ignore[union-attr]
+    for listing, q in scored:
+        pay = f"${q.payout_usd:>8,.0f}" if q.payout_usd else f"{'-':>9}"  # type: ignore[union-attr]
+        print(f"{q.verdict:12} {q.score:3} {pay}  {listing.id}  [{listing.source}] {listing.title[:60]}")  # type: ignore[union-attr]
     for err in errors:
         print(f"! {err}", file=sys.stderr)
     print(f"\n{len(listings)} listing(s) saved under {ws.listings_dir}")
     return 0
+
+
+def cmd_triage(args: argparse.Namespace) -> int:
+    ws = _ws(args)
+    wanted = None if args.all else {"candidate"}
+    rows: list[tuple[Listing, object]] = []
+    for listing in ws.iter_listings():
+        q = ws.load_qualification(listing.id) or qualify(listing)
+        if wanted and getattr(q, "verdict") not in wanted:
+            continue
+        rows.append((listing, q))
+    if not rows:
+        print("nothing to triage. run discover or inbox add first (try --all).")
+        return 0
+    # Expected value = money first, then QA fit. This is the whole point of triage.
+    rows.sort(key=lambda pair: (getattr(pair[1], "payout_usd") or 0, getattr(pair[1], "score")), reverse=True)
+    print(f"{'payout':>10} {'score':>5}  {'id':<12} {'source':<14} title")
+    print("-" * 100)
+    for listing, q in rows[: args.limit]:
+        payout = getattr(q, "payout_usd")
+        pay = f"${payout:,.0f}" if payout else "-"
+        print(f"{pay:>10} {getattr(q, 'score'):>5}  {listing.id:<12} {listing.source:<14} {listing.title[:52]}")
+    print(f"\n{len(rows)} in scope. Work top-down: prepare → execute → report → approve → packet.")
+    return 0
+
 
 
 def cmd_inbox_add(args: argparse.Namespace) -> int:
@@ -180,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.set_defaults(func=cmd_inbox_add)
 
     sub.add_parser("list", help="list saved listings").set_defaults(func=cmd_list)
+
+    tri = sub.add_parser("triage", help="rank candidates by payout x QA fit")
+    tri.add_argument("--all", action="store_true", help="include needs_human as well as candidates")
+    tri.add_argument("--limit", type=int, default=25)
+    tri.set_defaults(func=cmd_triage)
 
     s = sub.add_parser("show", help="show one listing")
     s.add_argument("id")
