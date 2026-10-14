@@ -5,8 +5,10 @@ import pytest
 from qa_copilot.policy import (
     AccessMode,
     PolicyError,
+    WriteMode,
     assert_http_allowed,
     assert_write_allowed,
+    discoverable_source_ids,
     effective,
     get_source,
 )
@@ -94,3 +96,29 @@ def test_write_requires_approval():
 def test_remotive_never_writes():
     with pytest.raises(PolicyError, match="never"):
         assert_write_allowed("remotive", approved=True)
+
+
+def test_apify_is_official_api_but_opt_in():
+    # Apify runs a paid hosted scraper, so it must not run on a bare `discover`.
+    policy = get_source("apify")
+    assert policy.access is AccessMode.OFFICIAL_API
+    assert policy.write is WriteMode.NEVER
+    assert policy.allow_http_hosts == ("api.apify.com",)
+    assert policy.default_enabled is False
+    assert "apify" not in discoverable_source_ids()
+    # The operator can opt in (config may turn on an OFFICIAL_API source).
+    assert "apify" in discoverable_source_ids({"apify": True})
+
+
+def test_config_cannot_opt_into_a_disabled_source():
+    # usertesting is hard-disabled: flipping it on in config does nothing.
+    ids = discoverable_source_ids({"usertesting": True, "utest": True})
+    assert "usertesting" not in ids and "utest" not in ids
+
+
+def test_apify_never_talks_to_a_marketplace_directly():
+    assert_http_allowed("apify", "https://api.apify.com/v2/acts/owner~name/run-sync-get-dataset-items")
+    with pytest.raises(PolicyError, match="allowlist"):
+        assert_http_allowed("apify", "https://crowdworks.jp/public/jobs/1")
+    with pytest.raises(PolicyError, match="allowlist"):
+        assert_http_allowed("apify", "https://www.lancers.jp/work/detail/1")

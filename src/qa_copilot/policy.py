@@ -36,6 +36,11 @@ class SourcePolicy:
     attribution_required: bool = False
     allow_http_hosts: tuple[str, ...] = ()
     researched: str = RESEARCHED
+    # Opt-in sources are OFFICIAL_API but are skipped by a bare `discover`.
+    # They usually cost money or carry extra responsibility, so the operator
+    # must ask for them by name (`discover --source apify`) or enable them in
+    # config. Config can turn one on; it still cannot turn a disabled source on.
+    default_enabled: bool = True
 
 
 class PolicyError(RuntimeError):
@@ -177,6 +182,33 @@ SOURCES: dict[str, SourcePolicy] = {
         attribution_required=True,
         allow_http_hosts=("hn.algolia.com",),
     ),
+    "apify": SourcePolicy(
+        id="apify",
+        display_name="Apify actors (hosted scrapers)",
+        access=AccessMode.OFFICIAL_API,
+        write=WriteMode.NEVER,
+        ai_summary=(
+            "This tool speaks only to the official Apify API (api.apify.com), never to the marketplace "
+            "directly. Apify runs a third-party actor (hosted scraper) and returns its dataset, which this "
+            "tool reads and ranks. It is a paid, opt-in discovery path for marketplaces that have no public "
+            "jobs API (Upwork, Lancers, Coconala, Indeed, LinkedIn, Google Jobs, ...)."
+        ),
+        notes=(
+            "OPT-IN and read-only discovery. The target site's Terms of Service still apply to whatever the "
+            "actor fetches; using a hosted scraper does not launder a ToS violation, and the account-ban risk "
+            "is yours to accept. This source never logs in, never applies, never bids, never messages: it only "
+            "pulls listings you then work through the normal human gate. You pay Apify per result, so keep "
+            "`--limit` small. Configure APIFY_TOKEN and (optionally) APIFY_CHANNELS; see the README."
+        ),
+        docs=(
+            "https://docs.apify.com/api/v2",
+            "https://apify.com/store",
+            "https://docs.apify.com/platform/actors/running/actors-in-store",
+        ),
+        attribution_required=False,
+        allow_http_hosts=("api.apify.com",),
+        default_enabled=False,
+    ),
     "paste": SourcePolicy(
         id="paste",
         display_name="Manual paste inbox",
@@ -311,6 +343,7 @@ def effective(source_id: str, user_enabled: dict[str, bool] | None = None) -> So
             attribution_required=policy.attribution_required,
             allow_http_hosts=policy.allow_http_hosts,
             researched=policy.researched,
+            default_enabled=policy.default_enabled,
         )
     return policy
 
@@ -338,11 +371,17 @@ def assert_write_allowed(source_id: str, approved: bool) -> None:
 
 
 def discoverable_source_ids(user_enabled: dict[str, bool] | None = None) -> list[str]:
-    return [
-        sid
-        for sid in SOURCES
-        if effective(sid, user_enabled).access is AccessMode.OFFICIAL_API
-    ]
+    out: list[str] = []
+    for sid in SOURCES:
+        policy = effective(sid, user_enabled)
+        if policy.access is not AccessMode.OFFICIAL_API:
+            continue
+        # Opt-in sources stay out of a bare `discover` until the operator asks
+        # for them by name or flips them on in config.
+        if not policy.default_enabled and not (user_enabled or {}).get(sid):
+            continue
+        out.append(sid)
+    return out
 
 
 def paste_source_ids() -> list[str]:

@@ -74,6 +74,7 @@ permission_to_test: true
 | `careerjet` | official API | 給与のみ | 無料だが `CAREERJET_AFFID` 推奨（既定 `0` は 401 になりやすい）。`ja_JP`/`en_GB` を横断 |
 | `adzuna` | official API | 給与のみ | 無料キー。`jp,gb,us` など国単位で英語/日本語を横断 |
 | `hn_hiring` | official API | 給与のみ | Hacker News「Who is hiring」の今月スレッド |
+| `apify` | official API (opt-in) | 案件次第 | Apify のホスト型スクレイパー経由。**自分は api.apify.com しか叩かない**。有料。`discover --source apify` か config で明示的に有効化 |
 | `crowdworks` / `lancers` / `coconala` / `upwork` | paste only | 案件次第 | 自分でブラウザで開いた案件を貼る。HTTPは一切叩かない |
 | `usertesting` / `utest` / `freelancer_com` / `hackerone` / `bugcrowd` | disabled | - | AI規約・自動化規約により対象外 |
 
@@ -86,17 +87,40 @@ permission_to_test: true
 | `ADZUNA_COUNTRIES` | 既定 `jp,gb,us` |
 | `CAREERJET_LOCALES` | 既定 `ja_JP,en_GB` |
 | `CAREERJET_AFFID` | 既定 `0`。本番アフィリエイトIDがあれば設定 |
+| `APIFY_TOKEN` | [console.apify.com](https://console.apify.com/) のAPIトークン。`apify` を使う場合のみ（有料） |
+| `APIFY_CHANNELS` | 任意。actor と入力テンプレのJSON配列。未設定なら既定チャンネル（下記） |
 
 キーが無いソースは discover 時に「キーを設定してください」と明示してスキップします（無言で失敗しません）。
 
+### Apify (opt-in, 有料)
+
+CrowdWorks のような公開APIが無いサイトも、Apify の actor（ホスト型スクレイパー）経由なら
+発見できます。このツールは `api.apify.com` にしか HTTP を話しません（対象サイトには直接触らない）。
+
+```sh
+export APIFY_TOKEN=apify_api_xxx
+qa-copilot discover --source apify --limit 20
+```
+
+- **規約は消えません。** Apify を使うことは対象サイトの規約違反を合法化しません。取得は読み取り専用の
+  発見までで、ログイン・応募・入札・DM は絶対にしません（BANされると売上0）。リスクは利用者が受け入れる前提。
+- **既定は off。** お金がかかるので `discover` は実行しません。`--source apify` か config で有効化します。
+- **既定チャンネル**（`APIFY_CHANNELS` で上書き可。actor ID は変わることがあるので必ず Apify ストアで確認）:
+  - EN: Upwork (`neatrat~upwork-job-scraper`)、Indeed (`misceres~indeed-scraper`)、LinkedIn (`crawlworks~linkedin-jobs-scraper`)、Google Jobs (`epctex~google-jobs-scraper`)
+  - JA: Lancers (`youfuxu~lancers-japan-freelance-jobs-scraper`)、CareerCross (`jungle_synthesizer~career-cross-scraper`)、Japan Dev (`getascraper~japan-dev-scraper`)
+- **入出力は actor ごとにバラバラ**なので、アダプタは総称的です。`APIFY_CHANNELS` で
+  `{"id","actor","locale","query","input"}` を渡し、`input` 内の `{limit}` `{query}` は置換されます。
+  出力は一般的なフィールド名（`title`/`jobTitle`/`positionName` など）を順に拾って正規化します。
+
 ## What it will not do (and why it would cost you money)
 
-- CrowdWorks / Lancers / Coconala / Upwork をスクレイピングしない
+- 対象マーケットプレイスへ**直接**スクレイピングしない（`paste` のみ。`apify` を使う場合も自分は api.apify.com しか叩かない）
 - 応募・入札・DM を自動送信しない（BANされると売上は0になる）
 - Upwork へ HTTP を一切話しかけない（paste のみ。入札は必ず本人が公式UIで）
 - UserTesting / uTest を受けない（規約上AI回答が禁止＝成果物が提出できない）
 - バグバウンティへ未検証レポートを投げない
 - 求人広告を見ただけで本番サイトを叩かない（明示のテスト許可が必要）
+- Apify を既定で実行しない（有料＋対象サイトの規約は利用者の責任。`--source apify` で明示的に）
 
 ## Agent fit
 
