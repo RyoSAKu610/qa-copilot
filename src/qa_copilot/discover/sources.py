@@ -59,6 +59,47 @@ def _github_search(source_id: str, query: str, limit: int) -> list[dict]:
     return [item for item in (data.get("items") or []) if isinstance(item, dict)]
 
 
+# Repo metadata is one extra call per repo, so cache it and cap the number of
+# lookups per run. The cap keeps a huge result set from draining the rate limit.
+_REPO_CACHE: dict[str, dict] = {}
+_MAX_REPO_LOOKUPS = 25
+
+
+def _full_name(item: dict) -> str:
+    url = _s(item, "repository_url")  # https://api.github.com/repos/owner/name
+    parts = url.rstrip("/").split("/")
+    return "/".join(parts[-2:]) if len(parts) >= 2 else ""
+
+
+def _repo_meta(full_name: str) -> dict:
+    if not full_name:
+        return {}
+    if full_name in _REPO_CACHE:
+        return _REPO_CACHE[full_name]
+    if len(_REPO_CACHE) >= _MAX_REPO_LOOKUPS:
+        return {}
+    try:
+        data = get_json(
+            "github_issues",
+            f"https://api.github.com/repos/{full_name}",
+            headers=_github_headers(),
+        )
+    except Exception:
+        data = {}
+    meta: dict = {}
+    if isinstance(data, dict) and "full_name" in data:
+        meta = {
+            "description": _s(data, "description"),
+            "stars": data.get("stargazers_count"),
+            "forks": data.get("forks_count"),
+            "archived": bool(data.get("archived")),
+            "license": _s(data.get("license") or {}, "spdx_id"),
+        }
+    _REPO_CACHE[full_name] = meta
+    return meta
+
+
+
 # Hacker News hiring comments are free prose, so a loose keyword match returns
 # "Growth Marketing Manager" because the body says "test". The first line is the
 # role header, so match QA role titles there instead.
@@ -167,6 +208,9 @@ def fetch_github_bounties(limit: int = 20) -> list[Listing]:
             seen.add(url)
             listing = _listing_from_github("github_bounties", item)
             listing.tags = list(dict.fromkeys(listing.tags + ["bounty"]))
+            full_name = _full_name(item)
+            if full_name:
+                listing.extra["repo"] = _repo_meta(full_name)
             out.append(listing)
             if len(out) >= limit:
                 break
