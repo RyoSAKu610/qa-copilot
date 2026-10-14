@@ -15,6 +15,8 @@ The Python module is the source of truth at runtime. If they drift, fix the code
 
 Write modes: `never` (job boards) or `approval_required` (GitHub comments/PRs, marketplace applications). Even then, the tool only writes a local `packet/APPLY.md`.
 
+An `official_api` source may be marked **opt-in** (`default_enabled=False`). It is still HTTP-to-allowlisted-host only, but a bare `discover` skips it because it costs money or carries extra responsibility. `apify` is the only opt-in source today. Config may turn an opt-in source on; it still may not turn a `disabled` source on.
+
 Only `github_issues` / `github_bounties` and the paste-only marketplaces can be written to at all, and only after a signed approval packet. Everything the tool sends verbatim is written by a human.
 
 ## Matrix
@@ -34,6 +36,7 @@ Only `github_issues` / `github_bounties` and the paste-only marketplaces can be 
 | Adzuna | official API | never | Official search API, country-parameterised. Requires the user's own free `ADZUNA_APP_ID`/`ADZUNA_APP_KEY`. | Read-only. One source covers English and Japanese markets. |
 | Hacker News "Who is hiring" | official API | never | Public Algolia HN Search API. Reads the monthly thread and its comments; no HTML scraping of news.ycombinator.com. | Read-only. Comments often state salary; salaries are not treated as bounties. Reply by email. |
 | Paste inbox | paste | approval | N/A (local files). | Default path for JP marketplaces and Upwork copies. |
+| Apify actors (opt-in) | official API (opt-in) | never | This tool talks **only** to the official Apify API (`api.apify.com`) and never to the target site. Apify runs a third-party hosted scraper and returns a dataset. Apify's own terms govern the platform; the **target site's** terms still govern whatever the actor fetches — a proxy does not launder a ToS violation. Actor authors' outputs vary and actor IDs get renamed/deprecated/re-priced. | **Added (2026-10), opt-in, read-only.** Discovers listings from sites with no public jobs API (Upwork, Lancers, Coconala, Indeed, LinkedIn, Google Jobs, Japan Dev, CareerCross, ...). Never logs in, applies, bids, or messages: discovery feeds the normal human gate. Needs `APIFY_TOKEN`; costs money per result; the account-ban risk is the operator's to accept. Skipped by a bare `discover`; run with `--source apify`. |
 | CrowdWorks | paste | approval | Official AI policy (2024, still published 2026): AI use is **not banned**; it is between client and worker. Hide nothing. Quality still required. Job-offer guideline forbids scraping / automating services that do not allow it, and forbids asking workers to do that. ToS §23 forbids unauthorized access, DoS, and using the site for non-matching commercial activity. | No worker job API. Paste the page you opened. |
 | Lancers | paste | approval | Clients can mark generative-AI allowed/restricted (contest UI, 2024). Auto-proposal was **retired** (2026-03) in favor of confirm-then-propose. ToS §31-15 forbids commercial reuse of site content; §31-16 forbids high-load / unauthorized access / reverse engineering. | Paste only. Honor the job's AI flag. |
 | Coconala | paste | approval | AI *illustrations* are restricted. AI articles/photos have conditions. Automated tools against Coconala features are prohibited. ToS §13(22) forbids auto-responders on purchased content. | Do not HTTP-automate Coconala. |
@@ -91,9 +94,17 @@ Do not send client secrets, NDA text, or credentials to a third-party model. Ing
 - Careerjet partners / API: https://www.careerjet.com/partners/api/
 - Adzuna developer API: https://developer.adzuna.com/
 - Algolia HN Search API: https://hn.algolia.com/api
+- Apify API docs: https://docs.apify.com/api/v2
+- Apify actor store: https://apify.com/store
 
 ## Change log
 
+- 2026-10: added `apify` as an official-API **opt-in** source (`api.apify.com` only). It uses hosted
+  actors to discover listings on sites with no public jobs API (Upwork, Lancers, Coconala, Indeed,
+  LinkedIn, Google Jobs, Japan Dev, CareerCross, ...). Read-only: never logs in, applies, bids, or
+  messages, and the target site's ToS — not Apify's — still applies to what the actor fetches. It is
+  paid, so a bare `discover` skips it; enable with `--source apify` or config. Added `default_enabled`
+  to `SourcePolicy` so "official API" and "runs by default" are no longer the same thing.
 - 2026-10: `upwork` moved from `disabled` to `paste_only`. Its terms ban automation, not a human
   copying a listing into a local editor, so pasting is allowed while HTTP stays blocked and the source
   stays undiscoverable. `usertesting` / `utest` remain disabled because the *deliverable* would be

@@ -27,8 +27,10 @@ def cmd_policy(_args: argparse.Namespace) -> int:
     print(f"{'id':<18} {'access':<16} {'write':<20} name")
     print("-" * 78)
     for sid, p in SOURCES.items():
-        print(f"{sid:<18} {p.access.value:<16} {p.write.value:<20} {p.display_name}")
+        name = p.display_name if p.default_enabled else f"{p.display_name} (opt-in)"
+        print(f"{sid:<18} {p.access.value:<16} {p.write.value:<20} {name}")
     print("\nUser config cannot enable a disabled source or turn paste-only into HTTP.")
+    print("`discover` skips opt-in sources (listed above) unless you name them or enable them.")
     print("See docs/POLICY.md for the research notes (researched 2026-08-28).")
     return 0
 

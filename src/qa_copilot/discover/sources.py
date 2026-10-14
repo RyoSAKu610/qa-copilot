@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from qa_copilot.httputil import USER_AGENT, get_json
+from qa_copilot.httputil import USER_AGENT, get_json, post_json
 from qa_copilot.models import Listing, utc_now
 from qa_copilot.policy import PolicyError
 from qa_copilot.redact import redact
@@ -581,6 +582,206 @@ def fetch_hn_hiring(limit: int = 20) -> list[Listing]:
     return out
 
 
+# Apify is a hosted-scraper platform: this tool talks only to api.apify.com and
+# never to the marketplace. Actor input schemas and output fields are not
+# standardised, so the adapter is deliberately generic: it renders a per-channel
+# input template, runs the actor, and maps whatever common field names come back.
+#
+# These defaults are a *starting point*, not a contract. Actor IDs get renamed,
+# deprecated, and re-priced, so verify the actor still exists in the Apify store
+# and override the channel with APIFY_CHANNELS when it drifts. `{limit}` and
+# `{query}` inside a template are substituted (a bare "{limit}" becomes an int).
+DEFAULT_APIFY_CHANNELS: list[dict[str, Any]] = [
+    {
+        "id": "apify_upwork",
+        "actor": "neatrat~upwork-job-scraper",
+        "locale": "en",
+        "query": "QA tester",
+        "input": {"searchQuery": "{query}", "maxItems": "{limit}"},
+        "note": "Upwork listings. Read-only discovery; never auto-bid.",
+    },
+    {
+        "id": "apify_indeed",
+        "actor": "misceres~indeed-scraper",
+        "locale": "en",
+        "query": "QA test automation",
+        "input": {"position": "{query}", "maxItems": "{limit}", "country": "US"},
+        "note": "Indeed listings across locales.",
+    },
+    {
+        "id": "apify_linkedin",
+        "actor": "crawlworks~linkedin-jobs-scraper",
+        "locale": "en",
+        "query": "QA engineer",
+        "input": {"keywords": "{query}", "maxItems": "{limit}"},
+        "note": "LinkedIn job listings.",
+    },
+    {
+        "id": "apify_google_jobs",
+        "actor": "epctex~google-jobs-scraper",
+        "locale": "multi",
+        "query": "QA テスト",
+        "input": {"queries": "{query}", "maxItems": "{limit}"},
+        "note": "Google Jobs aggregates many boards and locales.",
+    },
+    {
+        "id": "apify_lancers",
+        "actor": "youfuxu~lancers-japan-freelance-jobs-scraper",
+        "locale": "ja",
+        "query": "QA テスト",
+        "input": {"keyword": "{query}", "maxItems": "{limit}"},
+        "note": "Lancers (Japan) freelance jobs. Read-only; never auto-propose.",
+    },
+    {
+        "id": "apify_career_cross",
+        "actor": "jungle_synthesizer~career-cross-scraper",
+        "locale": "ja",
+        "query": "QA engineer",
+        "input": {"mode": "search", "keyword": "{query}", "language": "en", "maxItems": "{limit}"},
+        "note": "CareerCross (Japan) bilingual job listings.",
+    },
+    {
+        "id": "apify_japan_dev",
+        "actor": "getascraper~japan-dev-scraper",
+        "locale": "ja",
+        "query": "QA",
+        "input": {"maxItems": "{limit}"},
+        "note": "Japan Dev (English-friendly Japan tech jobs).",
+    },
+]
+
+
+def _apify_render(template: Any, *, limit: int, query: str) -> Any:
+    """Substitute {limit}/{query} placeholders, preserving types."""
+
+    def sub(value: Any) -> Any:
+        if isinstance(value, str):
+            if value == "{limit}":
+                return limit
+            if value == "{query}":
+                return query
+            return value.replace("{limit}", str(limit)).replace("{query}", query)
+        if isinstance(value, dict):
+            return {k: sub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [sub(v) for v in value]
+        return value
+
+    return sub(template)
+
+
+def _apify_channels() -> list[dict[str, Any]]:
+    """Channels are configurable; a bad blob is a hard error, not a guess."""
+    raw = os.environ.get("APIFY_CHANNELS")
+    if not raw:
+        return DEFAULT_APIFY_CHANNELS
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise PolicyError(f"APIFY_CHANNELS is not valid JSON ({exc})")
+    if isinstance(parsed, dict):
+        parsed = parsed.get("channels")
+    if not isinstance(parsed, list) or not parsed:
+        raise PolicyError("APIFY_CHANNELS must be a non-empty JSON array of channel objects")
+    channels: list[dict[str, Any]] = []
+    for entry in parsed:
+        if not isinstance(entry, dict) or not entry.get("actor"):
+            raise PolicyError("every APIFY_CHANNELS entry needs an 'actor' id (owner~name)")
+        channels.append(entry)
+    return channels
+
+
+# Actors name the same concept differently. Try the common aliases in order.
+_APIFY_TITLE_KEYS = ("title", "positionName", "jobTitle", "position", "name", "job_name")
+_APIFY_URL_KEYS = ("url", "jobUrl", "positionUrl", "link", "applyUrl", "externalUrl", "job_url", "sourceUrl")
+_APIFY_COMPANY_KEYS = ("company", "companyName", "company_name", "employer", "clientName", "client")
+_APIFY_DESC_KEYS = ("description", "descriptionText", "jobDescription", "descriptionHtml", "summary", "body", "text")
+_APIFY_SALARY_KEYS = ("salary", "salaryText", "compensation", "salaryRange", "budget", "payment")
+
+
+def _apify_first(item: dict, *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (int, float)):
+            return str(value)
+    return ""
+
+
+def _apify_listing(channel: dict[str, Any], item: dict) -> Listing | None:
+    title = _apify_first(item, *_APIFY_TITLE_KEYS)
+    if not title:
+        return None
+    url = _apify_first(item, *_APIFY_URL_KEYS)
+    description = _strip_html(_apify_first(item, *_APIFY_DESC_KEYS))
+    company = _apify_first(item, *_APIFY_COMPANY_KEYS)
+    if not _is_qa_like(f"{title} {description} {company}"):
+        return None
+    actor = _s(channel, "actor")
+    key = url or f"{actor}:{title}:{company}"
+    extra = {
+        "apify_actor": actor,
+        "apify_channel": _s(channel, "id"),
+        "locale": _s(channel, "locale"),
+    }
+    salary = _apify_first(item, *_APIFY_SALARY_KEYS)
+    if salary:
+        extra["salary"] = salary
+    location = _apify_first(item, "location", "locations", "city", "country", "region")
+    if location:
+        extra["location"] = location
+    return Listing(
+        id=listing_id("apify", key),
+        source="apify",
+        title=title[:200],
+        url=url,
+        company=company,
+        description=redact(description[:4000]),
+        tags=[t for t in [_s(channel, "locale"), _s(channel, "id")] if t],
+        fetched_at=utc_now(),
+        attribution=f"Source: Apify actor {actor}. Discovery only — apply on the original listing.",
+        extra=extra,
+    )
+
+
+def fetch_apify(limit: int = 20) -> list[Listing]:
+    token = os.environ.get("APIFY_TOKEN") or os.environ.get("APIFY_API_TOKEN")
+    if not token:
+        raise PolicyError(
+            "set APIFY_TOKEN (and optionally APIFY_CHANNELS). "
+            "This source is opt-in and paid; get a token at console.apify.com."
+        )
+    channels = _apify_channels()
+    out: list[Listing] = []
+    seen: set[str] = set()
+    for channel in channels:
+        if len(out) >= limit:
+            break
+        actor = _s(channel, "actor")
+        # Actor ids are owner~name or a raw id; quote the tilde so the path is safe.
+        actor_path = quote(actor, safe="")
+        query = _s(channel, "query", default="QA")
+        payload = _apify_render(channel.get("input") or {}, limit=limit, query=query)
+        url = f"https://api.apify.com/v2/acts/{actor_path}/run-sync-get-dataset-items?token={quote(token)}&format=json"
+        try:
+            data = post_json("apify", url, payload)
+        except Exception as exc:  # noqa: BLE001 — name the actor that broke
+            raise PolicyError(f"actor {actor}: {exc}") from exc
+        items = data if isinstance(data, list) else (data.get("items") if isinstance(data, dict) else None)
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            listing = _apify_listing(channel, item)
+            if listing is None or listing.id in seen:
+                continue
+            seen.add(listing.id)
+            out.append(listing)
+            if len(out) >= limit:
+                break
+    return out
+
+
 REGISTRY: dict[str, Fetcher] = {
     "github_issues": fetch_github_issues,
     "github_bounties": fetch_github_bounties,
@@ -594,4 +795,5 @@ REGISTRY: dict[str, Fetcher] = {
     "careerjet": fetch_careerjet,
     "adzuna": fetch_adzuna,
     "hn_hiring": fetch_hn_hiring,
+    "apify": fetch_apify,
 }
