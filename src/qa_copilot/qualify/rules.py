@@ -31,6 +31,10 @@ DISQUALIFY = [
 ]
 
 
+def _has_bounty_label(listing: Listing) -> bool:
+    return any("bounty" in tag.lower() for tag in listing.tags)
+
+
 def _blob(listing: Listing) -> str:
     parts = [
         listing.title,
@@ -54,6 +58,7 @@ def qualify(listing: Listing) -> Qualification:
         listing.description,
         listing.extra.get("raw") if isinstance(listing.extra.get("raw"), str) else "",
         listing.extra.get("salary") if isinstance(listing.extra.get("salary"), str) else "",
+        bounty_context=_has_bounty_label(listing),
     )
 
     policy = get_source(listing.source) if listing.source else None

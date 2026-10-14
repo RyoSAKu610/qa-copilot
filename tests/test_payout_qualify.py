@@ -53,3 +53,14 @@ def test_disqualifier_still_rejects_even_with_payout():
     q = qualify(_listing(description="Bounty $900. 生成AI禁止。"))
     assert q.verdict == "reject"
     assert q.disqualifiers
+
+
+def test_bounty_label_lets_a_bare_amount_count():
+    q = qualify(
+        _listing(
+            title="Crash on save",
+            description="The app crashes. We pay $300 on merge.",
+            tags=["bounty"],
+        )
+    )
+    assert q.payout_usd == 300

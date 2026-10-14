@@ -15,19 +15,48 @@ from .ids import listing_id
 
 Fetcher = Callable[[int], list[Listing]]
 
-QA_QUERY = "qa OR test OR testing OR playwright OR a11y OR bug OR regression"
-
 # Used by the high-volume aggregators to keep only QA-shaped rows, in English and
 # Japanese. Deliberately broader than qualify(): discovery is cheap, noise is not.
 _QA_RE = re.compile(
     r"\b(qa|q\.a\.|quality|test|testing|tester|sdet|automation|playwright|cypress|"
-    r"selenium|e2e|regression|a11y|accessibility)\b|(テスト|品質|検証|不具合)",
+    r"selenium|e2e|regression|a11y|accessibility|bug|defect|repro|flaky|flake|crash)\b"
+    r"|(テスト|品質|検証|不具合|バグ)",
     re.I,
 )
 
 
 def _is_qa_like(text: str) -> bool:
     return bool(_QA_RE.search(text or ""))
+
+
+def _github_headers() -> dict[str, str]:
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_search(source_id: str, query: str, limit: int) -> list[dict]:
+    """Run one GitHub Search API query.
+
+    NOTE: GitHub rejects ``OR`` between *qualifiers*
+    ("logical operators only apply to text, not to qualifiers"), so every query
+    here must AND its qualifiers and never join labels with OR. Do not "simplify"
+    the callers back into a single OR-ed query.
+    """
+    params = urlencode(
+        {
+            "q": query,
+            "per_page": min(max(limit, 1), 100),
+            "sort": "created",
+            "order": "desc",
+        }
+    )
+    data = get_json(source_id, f"https://api.github.com/search/issues?{params}", headers=_github_headers())
+    if not isinstance(data, dict):
+        raise PolicyError(f"{source_id}: unexpected payload")
+    return [item for item in (data.get("items") or []) if isinstance(item, dict)]
 
 
 # Hacker News hiring comments are free prose, so a loose keyword match returns
@@ -79,66 +108,61 @@ def _tags(obj: Any, *keys: str) -> list[str]:
     return []
 
 
+def _listing_from_github(source: str, item: dict) -> Listing:
+    html = _s(item, "html_url")
+    return Listing(
+        id=listing_id(source, html),
+        source=source,
+        title=_s(item, "title"),
+        url=html,
+        company=_s(item, "repository_url").rsplit("/", 2)[-2] if _s(item, "repository_url") else "",
+        description=redact(_s(item, "body")[:4000]),
+        tags=[_s(lb, "name") for lb in (item.get("labels") or []) if isinstance(lb, dict)],
+        fetched_at=utc_now(),
+        extra={"repo_url": _s(item, "repository_url"), "number": item.get("number")},
+    )
+
+
 def fetch_github_issues(limit: int = 20) -> list[Listing]:
-    q = f'is:issue is:open ({QA_QUERY}) label:"good first issue"'
-    url = f"https://api.github.com/search/issues?q={q.replace(' ', '+')}&per_page={min(limit, 30)}"
-    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data = get_json("github_issues", url, headers=headers)
-    if not isinstance(data, dict):
-        raise PolicyError("github_issues: unexpected payload")
+    # One qualifier-only query, then filter locally. `(a OR b) label:x` is a 422.
+    items = _github_search("github_issues", 'is:issue is:open label:"good first issue"', limit * 4)
     out: list[Listing] = []
-    for item in data.get("items") or []:
-        html = _s(item, "html_url")
-        out.append(
-            Listing(
-                id=listing_id("github_issues", html),
-                source="github_issues",
-                title=_s(item, "title"),
-                url=html,
-                company=_s(item, "repository_url").rsplit("/", 2)[-2] if _s(item, "repository_url") else "",
-                description=redact(_s(item, "body")[:4000]),
-                tags=[
-                    _s(lb, "name")
-                    for lb in (item.get("labels") or [])
-                    if isinstance(lb, dict)
-                ],
-                fetched_at=utc_now(),
-                extra={"repo_url": _s(item, "repository_url"), "number": item.get("number")},
-            )
-        )
-    return out[:limit]
+    for item in items:
+        labels = " ".join(_s(lb, "name") for lb in (item.get("labels") or []) if isinstance(lb, dict))
+        if not _is_qa_like(f"{_s(item, 'title')} {labels} {_s(item, 'body')}"):
+            continue
+        out.append(_listing_from_github("github_issues", item))
+        if len(out) >= limit:
+            break
+    return out
+
+
+# Algora and friends label bounties with an emoji, so we search label-by-label
+# instead of OR-ing them (GitHub rejects OR between qualifiers).
+BOUNTY_LABELS = ("bounty", "💎 Bounty")
 
 
 def fetch_github_bounties(limit: int = 20) -> list[Listing]:
-    q = 'is:issue is:open (label:bounty OR label:"💎 Bounty" OR label:algora)'
-    url = f"https://api.github.com/search/issues?q={q.replace(' ', '+')}&per_page={min(limit, 30)}"
-    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    data = get_json("github_bounties", url, headers=headers)
-    if not isinstance(data, dict):
-        raise PolicyError("github_bounties: unexpected payload")
     out: list[Listing] = []
-    for item in data.get("items") or []:
-        html = _s(item, "html_url")
-        out.append(
-            Listing(
-                id=listing_id("github_bounties", html),
-                source="github_bounties",
-                title=_s(item, "title"),
-                url=html,
-                company=_s(item, "repository_url").rsplit("/", 2)[-2] if _s(item, "repository_url") else "",
-                description=redact(_s(item, "body")[:4000]),
-                tags=["bounty"],
-                fetched_at=utc_now(),
-                extra={"repo_url": _s(item, "repository_url"), "number": item.get("number")},
-            )
-        )
-    return out[:limit]
+    seen: set[str] = set()
+    for label in BOUNTY_LABELS:
+        if len(out) >= limit:
+            break
+        items = _github_search("github_bounties", f'is:issue is:open label:"{label}"', 100)
+        for item in items:
+            url = _s(item, "html_url")
+            if not url or url in seen:
+                continue
+            labels = " ".join(_s(lb, "name") for lb in (item.get("labels") or []) if isinstance(lb, dict))
+            if not _is_qa_like(f"{_s(item, 'title')} {labels} {_s(item, 'body')}"):
+                continue
+            seen.add(url)
+            listing = _listing_from_github("github_bounties", item)
+            listing.tags = list(dict.fromkeys(listing.tags + ["bounty"]))
+            out.append(listing)
+            if len(out) >= limit:
+                break
+    return out
 
 
 def fetch_remotive(limit: int = 20) -> list[Listing]:
