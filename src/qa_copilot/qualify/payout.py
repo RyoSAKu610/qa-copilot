@@ -32,6 +32,9 @@ _BOUNTY_CONTEXT = re.compile(
     r"|(報酬|謝礼|賞金|報奨|懸賞)"
 )
 
+# "Donate $10-$100", "sponsor us on Patreon" are money but not a payout to you.
+_NOT_PAYOUT = re.compile(r"(?i)\b(donat(?:e|ion)|sponsor|patreon|tip jar|ko-?fi|fundrais)\b")
+
 
 def _to_float(token: str) -> float:
     cleaned = token.strip().replace(",", "").replace(" ", "")
@@ -45,13 +48,22 @@ def _to_float(token: str) -> float:
         return 0.0
 
 
-def extract_payout(*texts: str) -> tuple[float | None, str]:
+def extract_payout(*texts: str, bounty_context: bool = False) -> tuple[float | None, str]:
     """Return the largest USD amount hinted at, plus a short human note.
+
+    ``bounty_context=True`` means the listing is already labelled as a bounty
+    (e.g. a GitHub issue with a ``bounty`` label), so a bare ``$500`` anywhere in
+    the text counts. Without it, a bounty-ish word must sit on the same line, to
+    keep salaries out.
 
     Returns ``(None, "")`` when there is no credible money signal.
     """
     blob = "\n".join(t for t in texts if t)
     if not blob:
+        return None, ""
+    # A post that asks for donations is not paying you. Whole-text check: a bare
+    # "$100" on its own line inside a donation post must not read as a bounty.
+    if _NOT_PAYOUT.search(blob):
         return None, ""
 
     amounts: list[float] = []
@@ -59,13 +71,14 @@ def extract_payout(*texts: str) -> tuple[float | None, str]:
         token = match.group("a") or match.group("b") or match.group("c")
         if not token:
             continue
-        # Guard: require bounty language on the same line. "compensation" here
-        # means a salary band, not a one-off bounty.
-        line_start = blob.rfind("\n", 0, match.start()) + 1
-        line_end = blob.find("\n", match.end())
-        line = blob[line_start : line_end if line_end != -1 else len(blob)]
-        if not _BOUNTY_CONTEXT.search(line):
-            continue
+        if not bounty_context:
+            # Without a bounty label, a bounty-ish word must be on the same line.
+            # "compensation" there means a salary band, not a one-off bounty.
+            line_start = blob.rfind("\n", 0, match.start()) + 1
+            line_end = blob.find("\n", match.end())
+            line = blob[line_start : line_end if line_end != -1 else len(blob)]
+            if not _BOUNTY_CONTEXT.search(line):
+                continue
         value = _to_float(token)
         # Ignore implausible dust and absurd "payouts" from concatenated numbers.
         if 5.0 <= value <= 500_000.0:

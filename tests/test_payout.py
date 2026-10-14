@@ -44,5 +44,20 @@ def test_salary_is_not_a_bounty():
     assert extract_payout("Compensation: $250,000 annually") == (None, "")
 
 
+def test_bounty_label_relaxes_context():
+    # A labelled bounty: a bare amount with a currency marker counts anywhere.
+    assert extract_payout("Fix the flaky test. Reward: $400", bounty_context=True)[0] == 400
+    assert extract_payout("We will send you $300", bounty_context=True)[0] == 300
+    # A currency marker is still required: "300 tests" is not a payout.
+    assert extract_payout("write 300 tests", bounty_context=True) == (None, "")
+    # And dust is still dust.
+    assert extract_payout("tip jar $3", bounty_context=True) == (None, "")
+
+
+def test_donation_is_not_a_bounty():
+    assert extract_payout("Donate $10-$100 USDT to support us", bounty_context=True) == (None, "")
+    assert extract_payout("Sponsor us: $50/month", bounty_context=True) == (None, "")
+
+
 def test_empty_input():
     assert extract_payout("", "") == (None, "")
